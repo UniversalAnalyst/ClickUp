@@ -1,1 +1,89 @@
+##Install ClickRUp package
+  options(repos = c(
+   psolymos = "https://psolymos.r-universe.dev",
+   CRAN = "https://cloud.r-project.org"))
+ install.packages('clickrup')
+ install.packages("tidyverse")
+ install.packages("skimr")
+ ls("package:clickrup")
+##Add ClickUp token as an envr variable
+#file.edit("~/.Renviron")
+Sys.setenv(CU_PAT = "pk_7800300_QI7UOCL61N2GF7GW5W3O097RO46VJFST")
+Sys.getenv("CU_PAT")
+
+library(tidyverse)
+library(skimr)
+library(clickrup)
+library(httr)
+library(jsonlite)
+
+cu_get_pat()
+Teams <- cu_get_teams()
+team_id <- Teams$teams[[1]]$id
+Spaces <- cu_get_spaces(team_id)
+bqt_space_id <- Spaces$spaces[[7]]$id
+BQTFolderlessList <- cu_get_lists_folderless(bqt_space_id)
+QTRTlist_id <- BQTFolderlessList$lists[[1]]$id
+BQTTaskspg1 <- cu_get_tasks(QTRTlist_id,include_closed=TRUE, page=1)
+
+# Exploring the CU data structure
+names(BQTTaskspg1)
+task1 <- BQTTaskspg1$tasks[[1]]
+names(task1)
+write_json(BQTTaskspg1$tasks,"BQTTaskspg1.json", pretty = TRUE)
+task1json <- fromJSON("BQTTaskspg1.json")
+df <- as.data.frame(task1json)
+
+colnames(df)
+
+
+
+elements <- function(x) {
+  list(
+    name = x$name,
+    date = x$date_closed,
+    custom_fields = x$custom_fields,
+    project = x$custom_fields[[1]]$value,
+    typos = x$custom_fields[[3]]$value,
+    qualityrating = x$custom_fields[[5]]$value
+  )
+}
+
+bqttaskdata <- t(sapply(BQTTaskspg1$tasks, elements))
+view(bqttaskdata)
+
+
+# Fnx to find the number in the dropdown based on the orderindex of the type_config$option that matches the custom_field value
+
+matching_orderindex_quality_option <- lapply(BQTTaskspg1$tasks[[99]]$custom_fields[[5]]$type_config$options, function(z) {
+  if (z$orderindex == BQTTaskspg1$tasks[[99]]$custom_fields[[5]]$value) {
+    return (z$name)
+  } else {
+    return(NULL)
+  }
+})
+matching_quality_names <- Filter(Negate(is.null),matching_orderindex_quality_option)
+if (length(matching_quality_names) > 0) {
+  print (unlist(as.integer(matching_quality_names))) # as.integer is used to convert (chr "5") into a number.  This will not be needed for other values that are strings (e.g. Yes, No)
+} else {
+  print("No matching names found")
+}  
+
+#  (Shelving for now... (20230926)) applying the orderindex & value matching script into the general element access function
+
+
+# Scott's Solution
+parameters <- list()
+for (i in 1:4) {
+  row <- list(
+    name = BQTTaskspg1$tasks[[1]]$name,
+    date = cu_date_from(BQTTaskspg1$tasks[[1]]$date_closed),
+    project = BQTTaskspg1$tasks[[1]]$custom_fields[[1]]$name,
+    qualityrating = BQTTaskspg1$tasks[[1]]$custom_fields[[5]]$value
+  )
+  row_name <- paste0(i)
+  parameters[[row_name]] <- row
+}
+as.data.frame(do.call(rbind, parameters))
+
 
