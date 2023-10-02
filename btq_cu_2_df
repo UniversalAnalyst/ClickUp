@@ -26,64 +26,55 @@ BQTFolderlessList <- cu_get_lists_folderless(bqt_space_id)
 QTRTlist_id <- BQTFolderlessList$lists[[1]]$id
 BQTTaskspg1 <- cu_get_tasks(QTRTlist_id,include_closed=TRUE, page=1)
 
-# Exploring the CU data structure
-names(BQTTaskspg1)
-task1 <- BQTTaskspg1$tasks[[1]]
-names(task1)
-write_json(BQTTaskspg1$tasks,"BQTTaskspg1.json", pretty = TRUE)
-task1json <- fromJSON("BQTTaskspg1.json")
-df <- as.data.frame(task1json)
-
-colnames(df)
-
-
-
-elements <- function(x) {
-  list(
-    name = x$name,
-    date = x$date_closed,
-    custom_fields = x$custom_fields,
-    project = x$custom_fields[[1]]$value,
-    typos = x$custom_fields[[3]]$value,
-    qualityrating = x$custom_fields[[5]]$value
-  )
-}
-
-bqttaskdata <- t(sapply(BQTTaskspg1$tasks, elements))
-view(bqttaskdata)
-
-
-# Fnx to find the number in the dropdown based on the orderindex of the type_config$option that matches the custom_field value
-
-matching_orderindex_quality_option <- lapply(BQTTaskspg1$tasks[[99]]$custom_fields[[5]]$type_config$options, function(z) {
-  if (z$orderindex == BQTTaskspg1$tasks[[99]]$custom_fields[[5]]$value) {
-    return (z$name)
-  } else {
-    return(NULL)
+bqttask1df <- as.data.frame(fromJSON(toJSON(BQTTaskspg1$tasks,auto_unbox = TRUE)))
+bqttask1df_subset <- bqttask1df[c("name", "date_closed","assignees", "custom_fields")]
+bqttask1df_subset$date_closed <- cu_date_from(bqttask1df_subset$date_closed)
+bqttask1df_subset$assignees <- as.character(sapply(bqttask1df_subset$assignees, function(x) x[2]))
+bqttask1df_subset$assignees <- sapply(bqttask1df_subset$assignees, function(x)  {
+  if (grepl("^c\\(.*\\)$", x)) {
+    # If the string starts with "c(" and ends with ")", remove them
+    x <- substr(x, 3, nchar(x) - 1)
   }
+    # Split the string and extract the first element
+  split_names <- unlist(strsplit(x, ", "))
+  first_name <- gsub("[[:punct:]]", "", split_names[1])
+  first_name <- gsub("\\\\", "", first_name)  # Remove backslashes
+  first_name
 })
-matching_quality_names <- Filter(Negate(is.null),matching_orderindex_quality_option)
-if (length(matching_quality_names) > 0) {
-  print (unlist(as.integer(matching_quality_names))) # as.integer is used to convert (chr "5") into a number.  This will not be needed for other values that are strings (e.g. Yes, No)
-} else {
-  print("No matching names found")
-}  
-
-#  (Shelving for now... (20230926)) applying the orderindex & value matching script into the general element access function
-
-
-# Scott's Solution
-parameters <- list()
-for (i in 1:4) {
-  row <- list(
-    name = BQTTaskspg1$tasks[[1]]$name,
-    date = cu_date_from(BQTTaskspg1$tasks[[1]]$date_closed),
-    project = BQTTaskspg1$tasks[[1]]$custom_fields[[1]]$name,
-    qualityrating = BQTTaskspg1$tasks[[1]]$custom_fields[[5]]$value
-  )
-  row_name <- paste0(i)
-  parameters[[row_name]] <- row
+bqttask1df_subset$Typos <- ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) {
+  return(y[3,"value"])
+  }
+)))==0, "Yes", "No")
+bqttask1df_subset$Incorporated <- ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[4,"value"])
 }
-as.data.frame(do.call(rbind, parameters))
+)))==0, "Yes", 
+  ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+    return(y[4,"value"])
+  }
+  )))==1, "No",
+    ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+      return(y[4,"value"])
+    }
+    )))==2, "N/A", NA)))
+bqttask1df_subset$Qscore <- as.character((sapply(bqttask1df_subset$custom_fields, function(y) {
+  return(y[5,"value"])
+}
+)))
+bqttask1df_subset$Qscore <- as.integer(bqttask1df_subset$Qscore) + 1
+bqttask1df_subset$completeness <- ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[6,"value"])
+}
+)))==0, "Yes", 
+ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[6,"value"])
+}
+)))==1, "No",
+ifelse((as.character(sapply(bqttask1df_subset$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[6,"value"])
+}
+)))==2, "N/A", NA)))
 
-
+view(bqttask1df_subset)
+skim_without_charts(bqttask1df_subset)
+view(bqttask1df_subset$custom_fields)
