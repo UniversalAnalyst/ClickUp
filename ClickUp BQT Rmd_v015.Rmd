@@ -1,0 +1,560 @@
+---
+title: "ClickUp BQT Report"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+##Install ClickRUp package
+#  options(repos = c(
+#   psolymos = "https://psolymos.r-universe.dev",
+#   CRAN = "https://cloud.r-project.org"))
+# install.packages(c('clickrup', 'tidyverse', 'skimr', 'knitr', 'rmarkdown'))
+ 
+##Add ClickUp token as an envr variable
+#file.edit("~/.Renviron")
+Sys.setenv(CU_PAT = " ")
+Sys.getenv("CU_PAT")
+
+## Initialize libraries
+library(tidyverse)
+library(skimr)
+library(clickrup)
+library(httr)
+library(jsonlite)
+library(knitr)
+library(rmarkdown)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r data_collection, include = FALSE}
+##  Communicate with Baymar's Clickup space.  ID Baymar Quality Team clickup folder location
+cu_get_pat()
+Teams <- cu_get_teams()
+team_id <- Teams$teams[[1]]$id
+Spaces <- cu_get_spaces(team_id)
+bqt_space_id <- Spaces$spaces[[7]]$id
+BQTFolderlessList <- cu_get_lists_folderless(bqt_space_id)
+QTRTlist_id <- BQTFolderlessList$lists[[1]]$id
+
+##  Get tasks from the Baymar Quality Team (BQT) folderless space
+BQTalltasks <- list()
+last_page <- FALSE
+page <- 0
+# Define a function to make the API request and extract tasks
+get_tasks <- function(page_number) {
+  BQTdata <- cu_get_tasks(QTRTlist_id, archived = TRUE, include_closed = TRUE, page = page_number)
+  tasks <- BQTdata$tasks
+  last_page <- BQTdata$last_page
+  return(list(tasks = tasks, last_page = last_page))
+}
+# Start the loop
+while (!last_page) {
+  # Get tasks and last_page status for the current page
+  result <- get_tasks(page)
+  # Extract tasks and last_page status from the result
+  tasks <- result$tasks
+  last_page <- result$last_page
+  # Add the tasks to the all_tasks list
+  BQTalltasks <- c(BQTalltasks, tasks)
+  # Increment the page number for the next request
+  page <- page + 1
+}
+```
+
+``` {r create_dataframe, include = FALSE}
+##  Convert tasks from json to a dataframe
+bqttaskdf <- as.data.frame(fromJSON(toJSON(BQTalltasks,auto_unbox = TRUE)))
+
+##  Create a subset of the task list that contains only the BQT data of interest
+bqttaskdf_subset <- bqttaskdf[c("name", "date_closed","assignees")]
+
+##  Begin to clean up each column of the subset so that it can more easily be used and plotted
+# Change from UNIX to datetime
+bqttaskdf_subset$date_closed <- cu_date_from(bqttaskdf$date_closed)
+# Change assignee from a list to a string
+bqttaskdf_subset$assignees <- as.character(sapply(bqttaskdf$assignees, function(x) x[2]))
+# When two assignees are chosen, opt for the first name to put into the column
+bqttaskdf_subset$assignees <- sapply(bqttaskdf_subset$assignees, function(x)  {
+  if (grepl("^c\\(.*\\)$", x)) {
+    # If the string starts with "c(" and ends with ")", remove them
+    x <- substr(x, 3, nchar(x) - 1)
+  }
+    # Split the string and extract the first element
+  split_names <- unlist(strsplit(x, ", "))
+  first_name <- gsub("[[:punct:]]", "", split_names[1])
+  first_name <- gsub("\\\\", "", first_name)  # Remove backslashes
+  first_name
+})
+# Return the typos value from the json list 0 & 1 into their corresponding strings "Yes" and "No"
+bqttaskdf_subset$typos <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[1,"value"])
+  }
+)))==0, "Yes", 
+  ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[1,"value"])
+    }
+  )))==1, "No", NA)
+)
+
+# Return the "have all comments been incorporated?" value from the json list 0, 1, & 2 into their corresponding strings "Yes", "No", & "N/A"
+bqttaskdf_subset$commentsIncorporated <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[2,"value"])
+}
+)))==0, "Yes", 
+  ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+    return(y[2,"value"])
+  }
+  )))==1, "No",
+    ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+      return(y[2,"value"])
+    }
+    )))==2, "N/A", NA)))
+# Return the "How would you rate the Quality..?" value from the json list 0, 1, 2, 3, & 4 into their corresponding integers 1:5
+bqttaskdf_subset$Qscore <- as.character((sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[3,"value"])
+}
+)))
+bqttaskdf_subset$Qscore <- as.integer(bqttaskdf_subset$Qscore) + 1
+
+# Return the "If the item is a drawing, is it complete with...?" value from the json list 0, 1, & 2 into their corresponding strings "Yes", "No", & "N/A"
+bqttaskdf_subset$drawingCompleteness <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[4,"value"])
+}
+)))==0, "Yes", 
+  ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[4,"value"])
+  }
+  )))==1, "No",
+    ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[4,"value"])
+    }
+    )))==2, "N/A", NA)))
+
+# Return the "If the item is a change order, are the attachments relevant...?" value from the json list 0, 1, & 2 into their corresponding strings "Yes", "No", & "N/A"
+bqttaskdf_subset$correctCOattmnts <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[5,"value"])
+  }
+  )))==0, "Yes", 
+    ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+      return(y[5,"value"])
+    }
+    )))==1, "No",
+      ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+        return(y[5,"value"])
+      }
+      )))==2, "N/A", NA)))
+
+# Return the "If the item is a change order, has all the content been populated...?" value from the json list 0, 1, & 2 into their corresponding strings "Yes", "No", & "N/A"
+bqttaskdf_subset$COcompleteness <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+  return(y[6,"value"])
+  }
+  )))==0, "Yes", 
+    ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+      return(y[6,"value"])
+    }
+    )))==1, "No",
+      ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+        return(y[6,"value"])
+      }
+      )))==2, "N/A", NA)))
+
+# Return the "Is the content in each section accurate...?" value from the json list 0 & 1 into their corresponding strings "Yes" & "No"
+bqttaskdf_subset$accurateContent <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+    return(y[7,"value"])
+  }
+  )))==0, "Yes", 
+  ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+    return(y[7,"value"])
+  }
+  )))==1, "No", NA)
+)
+
+# Return the "Is the correct template used?" value from the json list 0 & 1 into their corresponding strings "Yes" & "No"
+bqttaskdf_subset$correctTemplate <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[8,"value"])
+}
+)))==0, "Yes",
+  ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+    return(y[8,"value"])
+  }
+)))==1, "No", NA)
+)
+
+# Return the "Is the item under review complete with valid content...?" value from the json list 0 & 1 into their corresponding strings "Yes" & "No"
+bqttaskdf_subset$validContent <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[9,"value"])
+}
+)))==0, "Yes", 
+  ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) { # Yes = 0, No = 1, N/A = 2
+    return(y[9,"value"])
+  }
+)))==1, "No", NA)
+)
+
+# Return the "Type of Document" value from the json list 0 thru 6 into their corresponding strings "Drawing",  "Work Instruction", etc
+bqttaskdf_subset$docType <- ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==0, "Drawing", 
+ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==1, "Work Instruction", 
+ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==2, "Presentation", ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==3, "Change Order", ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==4, "Documents", ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==5, "IRF", ifelse((as.character(sapply(bqttaskdf$custom_fields, function(y) {
+  return(y[13,"value"])
+}
+)))==6, "PDP DA", NA)
+))))))
+
+```
+
+``` {r individual_data_frame_creation, include = FALSE}
+
+# Pull out the typo data for plotting
+typoData <- bqttaskdf_subset %>% 
+  filter(!is.na(typos)) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  # filter(month >= "2024-01") %>%   #Remove comment when starting the new year, copy to data pull outs below
+  summarize(percent = sum(typos =="No") / (sum(typos %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the comments incorporated data for plotting
+commIncorpData <- bqttaskdf_subset %>% 
+  filter(!is.na(commentsIncorporated)) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(commentsIncorporated =="Yes") / (sum(commentsIncorporated %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the Quality Rating data for plotting
+qualRatingData <- bqttaskdf_subset %>% 
+  filter(!is.na(Qscore)) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(MeanQscore = mean(Qscore)) %>% 
+  mutate(MeanQscore = round(MeanQscore, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the drawing completeness data for plotting
+dwgComplData <- bqttaskdf_subset %>% 
+  filter(!is.na(drawingCompleteness)) %>% 
+  filter(docType == "Drawing") %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(drawingCompleteness =="Yes") / (sum(drawingCompleteness %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the correct/relevant change order attachments data for plotting
+corrCOAttachData <- bqttaskdf_subset %>% 
+  filter(!is.na(correctCOattmnts)) %>% 
+  filter(docType %in% c("Change Order", "PDP DA")) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(correctCOattmnts =="Yes") / (sum(correctCOattmnts %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the change order completeness/accuracy data for plotting
+COComplData <- bqttaskdf_subset %>% 
+  filter(!is.na(COcompleteness)) %>% 
+  filter(docType %in% c("Change Order", "PDP DA")) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(COcompleteness =="Yes") / (sum(COcompleteness %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the accurate content data for plotting
+accContdata <- bqttaskdf_subset %>% 
+  filter(!is.na(accurateContent)) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(accurateContent =="Yes") / (sum(accurateContent %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the correct template data for plotting
+corrTemp <- bqttaskdf_subset %>% 
+  filter(!is.na(correctTemplate)) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(correctTemplate =="Yes") / (sum(correctTemplate %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+# Pull out the valid content data for plotting
+valCont <- bqttaskdf_subset %>% 
+  filter(!is.na(validContent)) %>% 
+  mutate( month = format(date_closed, "%Y-%m")) %>% 
+  group_by(month) %>% 
+  summarize(percent = sum(validContent =="Yes") / (sum(validContent %in% c("Yes", "No")))) %>% 
+  mutate(percent = percent * 100) %>% 
+  mutate(percent = round(percent, digits = 2)) %>% 
+  mutate(month = as.Date(paste0(month, "-01")))
+
+```
+
+## All Fields
+
+``` {r all_bqt, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 6, fig.width =9}
+# Combine dataframes using rbind()
+combined_bqt_data <- rbind(typoData, commIncorpData, dwgComplData, corrCOAttachData, COComplData, accContdata, corrTemp, valCont)
+
+# Plot all BQT KPIs into a single chart
+ggplot(combined_bqt_data, aes(x = month, y = percent)) +
+  geom_point(data = typoData, aes(color = "Typos"), size = 2) + geom_line(data = typoData, aes(color = "Typos"), linewidth = 1) +
+  geom_point(data = commIncorpData, aes(color = "Comments Incorporated"), size = 2) + geom_line (data = commIncorpData, aes(color = "Comments Incorporated"), linewidth = 1) +
+  geom_point(data = dwgComplData, aes(color = "Drawing Completeness"), size = 2) + geom_line(data = dwgComplData, aes(color = "Drawing Completeness"), linewidth = 1) +
+  geom_point(data = corrCOAttachData, aes(color = "Correct CO Attachments"), size = 2) + geom_line(data = corrCOAttachData, aes(color = "Correct CO Attachments"), linewidth = 1) +
+  geom_point(data = COComplData, aes(color = "CO Completeness"), size = 2) + geom_line(data = COComplData, aes(color = "CO Completeness"), linewidth = 1) +
+  geom_point(data = accContdata, aes(color = "Accurate Content"), size = 2) + geom_line(data = accContdata, aes(color = "Accurate Content"), linewidth = 1) +
+  geom_point(data = corrTemp, aes(color = "Correct Template"), size = 2) + geom_line(data = corrTemp, aes(color = "Correct Template"), linewidth = 1) +
+  geom_point(data = valCont, aes(color = "Valid Content"), size = 2) + geom_line(data = valCont, aes(color = "Valid Content"), linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year, depending on new goals
+  #geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_color_manual(values = c("Typos" = "cornflowerblue", "Comments Incorporated" = "gold", "Drawing Completeness" = "tomato", "Correct CO Attachments" = "purple", "CO Completeness" = "yellowgreen", "Accurate Content" = "rosybrown", "Correct Template" = "grey40", "Valid Content" = "grey80")) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(combined_bqt_data$percent[is.finite(combined_bqt_data$percent)] / 5)) * 5), ceiling(max(combined_bqt_data$percent[is.finite(combined_bqt_data$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "All Monthly Quality Fields", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "bottom") +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+
+```
+
+## Individual Fields
+
+``` {r typos, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot typo data
+ggplot(typoData, aes(x = month, y = percent)) +
+  geom_point(data = typoData, color = "cornflowerblue", size = 2) + 
+  geom_line(data = typoData, color = "cornflowerblue", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(typoData$percent[is.finite(typoData$percent)] / 5)) * 5), ceiling(max(typoData$percent[is.finite(typoData$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Typos, Percent No", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r comments_incorporated, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot the comments incorporated data
+ggplot(commIncorpData, aes(x = month, y = percent)) +
+  geom_point(data = commIncorpData, color = "gold", size = 2) + 
+  geom_line (data = commIncorpData, color = "gold", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(commIncorpData$percent[is.finite(commIncorpData$percent)] / 5)) * 5), ceiling(max(commIncorpData$percent[is.finite(commIncorpData$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Comments Incorporated, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r quality_rating, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 9}
+
+#Plot the Quality Rating data
+ggplot(qualRatingData, aes(x = month, y = MeanQscore)) +
+  geom_point(data = qualRatingData, color = "navy", size = 2) + 
+  geom_line (data = qualRatingData, color = "navy", linewidth = 1) +
+  geom_hline(yintercept = 4, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 4 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(limits = c(3,5), breaks = seq(0,5, by = 0.25)) +
+  theme_classic () +
+  labs(title = "Quality Rating", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r drawing_completeness, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width = 9}
+
+# Plot the drawing completeness data
+ggplot(dwgComplData, aes(x = month, y = percent)) +
+  geom_point(data = dwgComplData, color = "tomato", size = 2) + 
+  geom_line (data = dwgComplData, color = "tomato", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(dwgComplData$percent[is.finite(dwgComplData$percent)] / 5)) * 5), ceiling(max(dwgComplData$percent[is.finite(dwgComplData$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Drawing Completeness, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+
+```
+
+``` {r relevant_change_order_attachments, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot the correct/relevant change order attachments data
+ggplot(corrCOAttachData, aes(x = month, y = percent)) +
+  geom_point(data = corrCOAttachData, color = "purple", size = 2) + 
+  geom_line (data = corrCOAttachData, color = "purple", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(corrCOAttachData$percent[is.finite(corrCOAttachData$percent)] / 5)) * 5), ceiling(max(corrCOAttachData$percent[is.finite(corrCOAttachData$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Correct Change Order Attachments, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r change_order_completeness, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot the change order completeness/accuracy data
+ggplot(COComplData, aes(x = month, y = percent)) +
+  geom_point(data = COComplData, color = "yellowgreen", size = 2) + 
+  geom_line (data = COComplData, color = "yellowgreen", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(COComplData$percent[is.finite(COComplData$percent)] / 5)) * 5), ceiling(max(COComplData$percent[is.finite(COComplData$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Change Order Completeness, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r accurate_content, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot the accurate content data
+ggplot(accContdata, aes(x = month, y = percent)) +
+  geom_point(data = accContdata, color = "rosybrown", size = 2) + 
+  geom_line (data = accContdata, color = "rosybrown", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(accContdata$percent[is.finite(accContdata$percent)] / 5)) * 5), ceiling(max(accContdata$percent[is.finite(accContdata$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Accurate Content, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r correct_template, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot the correct template data
+ggplot(corrTemp, aes(x = month, y = percent)) +
+  geom_point(data = corrTemp, color = "grey40", size = 2) + 
+  geom_line (data = corrTemp, color = "grey40", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(corrTemp$percent[is.finite(corrTemp$percent)] / 5)) * 5), ceiling(max(corrTemp$percent[is.finite(corrTemp$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Correct Template, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+```
+
+``` {r valid_content, echo = FALSE, message = FALSE, warning = FALSE, fig.height = 2.5, fig.width =9}
+
+# Plot the valid content data
+ggplot(valCont, aes(x = month, y = percent)) +
+  geom_point(data = valCont, color = "grey80", size = 2) + 
+  geom_line (data = valCont, color = "grey80", linewidth = 1) +
+  geom_hline(yintercept = 80, linewidth = 1, color = "red", linetype = "dashed")+  # Adjust yintercept to more than 80 next year
+  geom_smooth(method = "lm", se = FALSE, color = "green", linewidth = 0.75) + # Use the geom_smooth for single dataframe plots
+  scale_x_date(date_breaks = "1 month", date_labels = "%b-%y", minor_breaks = NULL) +
+  scale_y_continuous(breaks = seq((floor(min(valCont$percent[is.finite(valCont$percent)] / 5)) * 5), ceiling(max(valCont$percent[is.finite(valCont$percent)] / 5)) * 5, by = 5), minor_breaks = NULL) +
+  theme_classic () +
+  labs(title = "Valid Content, Percent Yes", color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14)) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid.major = element_line(linewidth = 0.5, color = "darkgrey")) +
+  theme(panel.grid.major.x = element_blank())+
+  theme(plot.background = element_rect(fill = "white")) +
+  theme(axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 14))
+
+```
+
+``` {r csv_output, include = FALSE, eval = FALSE}
+# Output the dataframe as a csv and drop it into the Baymar shared folder for Kris
+# Use this to manually create the csv if not using a task scheduler to run this rmd file
+
+output_folder <- "G:\\Shared drives\\Engineering Resources\\Quality Team\\Reports\\"
+timestamp <- format(Sys.time(), "%Y-%m-%d_%H%M%S")
+file_name <- paste0("BQTtaskoutput_", timestamp, ".csv")
+write.csv(bqttaskdf_subset, file = paste0(output_folder, file_name), row.names = FALSE)
+```
+
+``` {r rmarkdown_html_file_output, include = FALSE, eval = FALSE}
+# Output the rmarkdown as a html file and route it to the Baymar shared folder for Kris
+# Use this to manually render if not using a task scheduler to run this rmd file
+
+output_file_path <- "G:\\Shared drives\\Engineering Resources\\Quality Team\\Reports\\"
+timestamp <- format(Sys.time(), "%Y-%m-%d_%H%M%S")
+rmarkdown_file <- "ClickUp BQT Rmd_v01.Rmd"
+output_file <- paste0("ClickUp BQT Graphic Report_", timestamp, ".html")
+output_file_combined <- paste0(output_file_path, output_file)
+render(rmarkdown_file, output_format = "html_document", output_file = output_file_combined)
+```
