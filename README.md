@@ -1,5 +1,30 @@
-This R markdown file was written to automate the retrival of data from Clickup (a web-based productivity website) for creating plots of Quality metrics over time.  Each week, the script is run and creates a cumilative look at data trends for leadership to monitor Quality KPIs over time.
+# R Markdown Automation for ClickUp Data Retrieval
 
-For privacy reasons, the authorization token "pk_" has been omttied from the script.  If the code is run in notebook, the execution will not work propoerly.  The package used (ClickRUp by Peter Solymos (https://github.com/psolymos/clickrup)) calls upon the locations of lists that are specific to the private Clickup space folders.
+This R markdown file automates the retrieval of data from ClickUp, a web-based productivity tool (https://clickup.com/), for creating plots of Quality metrics over time. The script runs weekly, processing and visualizing values recorded in ClickUp to present data trends for leadership to monitor Quality KPIs and take necessary actions.
 
-The code is an demonstration of how I was able to use Peter Solymos' R package, in addition to the tidyverse package, to extract data tracked on the Clickup app and automate the creation of weekly line charts, thereby removing the need for manual repetition by an engineer.
+**Note:** For privacy reasons, the authorization token "pk_" has been omitted. Running the script in a notebook may not work properly due to specific list locations in private ClickUp space folders.
+
+The code utilizes ClickRUp by Peter Solymos (https://github.com/psolymos/clickrup) and the tidyverse package to extract data from ClickUp, automating the creation of weekly data visualizations and eliminating manual manipulation.
+
+## Script Sections
+
+- **Setup**
+- **Data/Task Extraction**
+- **Looping Function**
+  - Requests data page-by-page to accommodate data packet size limitations
+- **Output Data**
+  - Converts data into JSON format
+- **Data Conversion**
+  - Transforms JSON to a dataframe
+- **Data Formatting**
+- **Data Processing**
+  - Detailed extraction of quality data of interest
+  - Filtering, grouping, and mutating data into monthly metrics
+- **Data Visualization**
+  - Generates time series plots
+- **Data Export**
+  - Creates a CSV file of the cumulative dataset
+  - Produces an HTML file of plots
+
+Thank you for your interest. Please reach out if you have any questions or feedback!
+
